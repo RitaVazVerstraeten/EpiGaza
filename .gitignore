@@ -1,0 +1,14 @@
+# Ignore the entire /data directory and its contents
+/data/
+
+# Common files to ignore
+*.log
+*.tmp
+*.swp
+*.swo
+*.DS_Store
+*.pyc
+__pycache__/
+.env
+.venv/
+.idea/
