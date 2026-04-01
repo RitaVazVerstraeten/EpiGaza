@@ -1,0 +1,740 @@
+---
+title: "Epidemiological Time Trends in Gaza 2025"
+author: "Rita Verstraeten"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+if (!requireNamespace("ggpattern", quietly = TRUE)) {
+  install.packages("ggpattern")
+}
+library(ggpattern)
+library(ggfortify)
+library(patchwork)
+library(tidyr)
+
+image_dir <- "images"
+
+data_dir <- "data/"
+files <- list(
+  "Acute Respiratory Infections" = "acute_respiratory_infections.csv",
+  "Acute Watery Diarrhea" = "acute_watery_diarrhea.csv",
+  "Bloody Diarrhea" = "bloody_diarrhea.csv", 
+  "airwars" = "airwars.csv"
+)
+
+# Summarize type.strike labels (needed across Airwars chunks)
+summarize_strike <- function(x) {
+  x <- tolower(x)
+  if (is.na(x) || x == "/") return("/")
+  if (grepl("airstrike", x) && grepl("ground operation|ground peration", x)) return("combo air- & ground-strike")
+  if (grepl("airstrike", x)) return("airstrike")
+  if (grepl("ground operation|ground peration", x)) return("ground operation")
+  if (grepl("naval", x)) return("naval bombardement")
+  return("other")
+}
+```
+
+# Data time-series 
+
+This report visualizes the time trends of selected epidemic diseases in Gaza using weekly surveillance data.
+
+---
+## Airwars Data
+
+```{r read in the airwars data}
+airwars <- read_csv(file.path(data_dir, files['airwars']))
+airwars$datum <- as.Date(airwars$datum)
+airwars$week <- floor_date(airwars$datum, unit = "week")
+```
+
+```{r craete the airwars timeseries (total and per region) by infrastructure}
+# Gather killed and injured into long format
+
+airwars$type.strike.summarized <- sapply(airwars$type.strike, summarize_strike)
+
+airwars_long <- airwars %>%
+  pivot_longer(cols = c(aantal.killed, aantal.injured),
+               names_to = "type",
+               values_to = "count") %>%
+  mutate(type.strike.summarized = sapply(type.strike, summarize_strike))
+
+# Sum casualties per week and summarized type.strike for stacking
+airwars_sum_zone <- airwars_long %>%
+  group_by(week, zone, type.strike.summarized, type) %>%
+  summarise(count = sum(count, na.rm = TRUE), .groups = 'drop')
+
+# Add a 'Total' zone for the overall plot
+airwars_sum_total <- airwars_long %>%
+  group_by(week, type.strike.summarized, type) %>%
+  summarise(count = sum(count, na.rm = TRUE), .groups = 'drop') %>%
+  mutate(zone = 'Total')
+
+airwars_sum_all <- bind_rows(airwars_sum_total, airwars_sum_zone)
+
+# Recode infrastructuur into requested categories
+
+# Improved recoding for infrastructure
+recode_infra <- function(x) {
+  x <- tolower(trimws(x))
+  if (is.na(x) || x == "" || x == "/") return("NA")
+  # Combo: if more than one main type present
+  n_combo <- sum(grepl("education", x), grepl("healthcare", x), grepl("humanitarian|humatarian", x), grepl("residential", x))
+  if (n_combo > 1) return("combo")
+  # Humanitarian (catch typo 'humatarian')
+  if (grepl("humanitarian|humatarian|idp|refugee camp|unrwa|ngo|aid", x)) return("Humanitarian")
+  # Education
+  if (grepl("education", x)) return("Education")
+  # Healthcare
+  if (grepl("healthcare|hospital|clinic|medical", x)) return("Healthcare")
+  # Residential
+  if (grepl("residential|housing|apartment|home|house", x)) return("Residential")
+  return("Other")
+}
+
+airwars_long$infra_grouped <- sapply(airwars_long$infrastructuur, recode_infra)
+
+airwars_sum_zone_infra <- airwars_long %>%
+  group_by(week, zone, infra_grouped, type) %>%
+  summarise(count = sum(count, na.rm = TRUE), .groups = 'drop')
+
+airwars_sum_total_infra <- airwars_long %>%
+  group_by(week, infra_grouped, type) %>%
+  summarise(count = sum(count, na.rm = TRUE), .groups = 'drop') %>%
+  mutate(zone = 'Total')
+
+airwars_sum_all_infra <- bind_rows(airwars_sum_total_infra, airwars_sum_zone_infra)
+
+
+airwars_plot_infra <- ggplot(airwars_sum_all_infra, aes(
+  x = week, y = count,
+  fill = infra_grouped,
+  alpha = ifelse(type == "aantal.killed", 1, 0.5)
+  )) +
+  geom_bar(
+    stat = "identity",
+    position = "stack",
+    color = "black",
+    width = 5
+  ) +
+  scale_fill_brewer(palette = "Dark2", name = "Infrastructure") +
+  scale_alpha_continuous(
+    range = c(0.5, 1),
+    breaks = c(0.5, 1),
+    labels = c("Injured (alpha 0.5)", "Killed (alpha 1)"),
+    name = "Casualty Type"
+  ) +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b %Y") +
+  labs(
+    title = "Airwars: Casualties by Week and Infrastructure (Total and by Region)",
+    x = "Week", y = "Casualties",
+    caption = paste(
+      "Infrastructure recoding legend:\n",
+      "Education: contains 'education' only\n",
+      "Healthcare: contains 'healthcare', 'hospital', 'clinic', or 'medical' only\n",
+      "Humanitarian: contains 'humanitarian', 'humatarian', 'idp', 'refugee camp', 'unrwa', 'ngo', or 'aid' only\n",
+      "Residential: contains 'residential', 'housing', 'apartment', 'home', or 'house' only\n",
+      "combo: more than one of the above in a single entry\n",
+      "NA: missing, empty, or '/'\n",
+      "Other: all other cases"
+    )
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.caption = element_text(hjust = 0, size = 9)) +
+  facet_wrap(~zone, ncol = 1, scales = "free_y")
+
+print(airwars_plot_infra)
+ggsave("images/airwars_by_infra_by_week.png", airwars_plot_infra, width = 12, height = 8)
+```
+
+```{r craete the airwars timeseries (total and per region) by strike}
+# Gather killed and injured into long format
+
+# Summarize type.strike
+summarize_strike <- function(x) {
+  x <- tolower(x)
+  if (is.na(x) || x == "/") return("/")
+  if (grepl("airstrike", x) && grepl("ground operation|ground peration", x)) return("combo air- & ground-strike")
+  if (grepl("airstrike", x)) return("airstrike")
+  if (grepl("ground operation|ground peration", x)) return("ground operation")
+  if (grepl("naval", x)) return("naval bombardement")
+  return("other")
+}
+
+airwars$type.strike.summarized <- sapply(airwars$type.strike, summarize_strike)
+
+airwars_long <- airwars %>%
+  pivot_longer(cols = c(aantal.killed, aantal.injured),
+               names_to = "type",
+               values_to = "count") %>%
+  mutate(type.strike.summarized = sapply(type.strike, summarize_strike))
+
+# Sum casualties per week and summarized type.strike for stacking
+airwars_sum_zone <- airwars_long %>%
+  group_by(week, zone, type.strike.summarized, type) %>%
+  summarise(count = sum(count, na.rm = TRUE), .groups = 'drop')
+
+# Add a 'Total' zone for the overall plot
+airwars_sum_total <- airwars_long %>%
+  group_by(week, type.strike.summarized, type) %>%
+  summarise(count = sum(count, na.rm = TRUE), .groups = 'drop') %>%
+  mutate(zone = 'Total')
+
+airwars_sum_all <- bind_rows(airwars_sum_total, airwars_sum_zone)
+
+# Stacked bar plot: fill color by type.strike.summarized, alpha by casualty type
+
+airwars_plot <- ggplot(airwars_sum_all, aes(
+  x = week, y = count,
+  fill = type.strike.summarized,
+  alpha = ifelse(type == "aantal.killed", 1, 0.5)
+  )) +
+  geom_bar(
+    stat = "identity",
+    position = "stack",
+    color = "black",
+    width = 5
+  ) +
+  scale_fill_brewer(palette = "Set1", name = "Type of Strike") +
+  scale_alpha_continuous(
+    range = c(0.5, 1),
+    breaks = c(0.5, 1),
+    labels = c("Injured (alpha 0.5)", "Killed (alpha 1)"),
+    name = "Casualty Type"
+  ) +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b %Y") +
+  labs(
+    title = "Airwars: Major Events and Casualties by Week (Total and by Region)",
+    x = "Week", y = "Casualties",
+    caption = paste(
+      "Type of Strike recoding legend:\n",
+      "airstrike: contains 'airstrike' only\n",
+      "ground operation: contains 'ground operation' only\n",
+      "combo air- & ground-strike: contains both 'airstrike' and 'ground operation'\n",
+      "naval bombardement: contains 'naval'\n",
+      "other: all other cases or not classified"
+    )
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.caption = element_text(hjust = 0, size = 9)) +
+  facet_wrap(~zone, ncol = 1, scales = "free_y")
+
+print(airwars_plot)
+ggsave("images/airwars_by_strikeType_by_week.png", airwars_plot, width = 12, height = 8)
+```
+## Acute Respiratory Infections (ARI)
+
+```{r ari-load-plot}
+ari <- read_csv(file.path(data_dir, files[["Acute Respiratory Infections"]]))
+ari$Start.Date <- as.Date(ari$Start.Date)
+ari$End.Date <- as.Date(ari$End.Date)
+
+# Plot cases over time
+ari %>%
+  ggplot(aes(x = Start.Date, y = cases, color = region)) +
+  geom_point() +
+  geom_line() +
+  labs(title = "Acute Respiratory Infections: Weekly Cases",
+       x = "Week Start Date", y = "Cases") +
+  theme_minimal()
+ggsave("images/ARI_by_week.png", width = 14, height = 8)
+
+```
+
+---
+
+## Acute Watery Diarrhea (AWD)
+
+```{r awd-load-plot}
+awd <- read_csv(file.path(data_dir, files[["Acute Watery Diarrhea"]]))
+awd$Start.Date <- as.Date(awd$Start.Date)
+awd$End.Date <- as.Date(awd$End.Date)
+
+awd %>%
+  ggplot(aes(x = Start.Date, y = cases, color = region)) +
+geom_point() +
+  geom_line() +
+  labs(title = "Acute Watery Diarrhea: Weekly Cases",
+       x = "Week Start Date", y = "Cases") +
+  theme_minimal()
+ggsave("images/AWD_by_week.png", width = 14, height = 8)
+
+```
+
+---
+
+## Bloody Diarrhea (BD)
+
+```{r bd-load-plot}
+bd <- read_csv(file.path(data_dir, files[["Bloody Diarrhea"]]))
+bd$Start.Date <- as.Date(bd$Start.Date)
+bd$End.Date <- as.Date(bd$End.Date)
+
+bd %>%
+  ggplot(aes(x = Start.Date, y = cases, color = region)) +
+  geom_point() +   
+  geom_line() +
+  labs(title = "Bloody Diarrhea: Weekly Cases",
+       x = "Week Start Date", y = "Cases") +
+  theme_minimal()
+ggsave("images/BD_by_week.png", width = 14, height = 8)
+
+```
+
+# Visualize missing data per disease and region
+
+```{r missingness-visualization, message=FALSE, warning=FALSE, fig.width=12, fig.height=6}
+
+library(patchwork)
+disease_names <- c("Acute Respiratory Infections", "Acute Watery Diarrhea", "Bloody Diarrhea")
+plots_list <- list()
+for (disease in disease_names) {
+  dat <- read_csv(file.path(data_dir, files[[disease]]))
+  dat$Start.Date <- as.Date(dat$Start.Date)
+  # Pad all weeks for each region
+  all_weeks <- seq(min(dat$Start.Date), max(dat$Start.Date), by = "week")
+  all_regions <- unique(dat$region)
+  pad_grid <- expand.grid(Start.Date = all_weeks, region = all_regions)
+  dat_full <- pad_grid %>%
+    left_join(dat, by = c("Start.Date", "region")) %>%
+    arrange(region, Start.Date)
+  dat_full$missing <- is.na(dat_full$cases)
+  p <- ggplot(dat_full, aes(x = Start.Date, y = region, fill = missing)) +
+    geom_tile(color = "grey80") +
+    scale_fill_manual(values = c("FALSE" = "#2ca02c", "TRUE" = "#d62728"),
+                      labels = c("Present", "Missing"), name = "Data") +
+    labs(title = paste("Missing Data Pattern:", disease),
+         x = "Week", y = "Region") +
+    scale_x_date(date_breaks = "1 month", date_labels = "%b\n%Y", expand = c(0,0)) +
+    theme_minimal(base_size = 12) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      panel.grid.major.x = element_line(color = "grey80", linewidth = 0.5),
+      panel.grid.minor.x = element_blank(),
+      panel.grid.major.y = element_line(color = "grey80", linewidth = 0.5),
+      panel.grid.minor.y = element_blank()
+    )
+  plots_list[[disease]] <- p
+}
+
+# Stack the plots vertically using patchwork
+missingness_stacked_plot <- plots_list[[1]] / plots_list[[2]] / plots_list[[3]] +
+  plot_layout(ncol = 1)
+
+print(missingness_stacked_plot)
+
+# Save the stacked plot as PNG and PDF
+if (!dir.exists("images")) dir.create("images")
+
+ggsave("images/missingness_stacked_plot.png", missingness_stacked_plot, width = 16, height = 12, dpi = 300)
+```
+
+Based off of the missingness in all three diseases, I would suggest starting the analysis no earlier than February 2024 (woul
+d this be alright given the timeline of events?). 
+Also, given the large proportion of missing data in the region of North Gaza, we need to carefully consider time-series analysis here. 
+
+# Impute missing data in Rafah, Khanyunis, and Deiralbalah between 02/2024 and 02/2026
+
+Start at week 9 in 2024 end in week 7 2026
+## Explanation
+For robust time series analysis (given large proportions of missing data in North Gaza and Gaza city), we restrict imputation to the regions Rafah, Khanyunis, and Deiralbalah, and to the period between week 9 of 2024 and week 7 of 2026. We use the Kalman smoothing method (na_kalman from imputeTS) to impute missing values, as it is well-suited for time series with seasonality and trend. Imputation is performed separately for each disease and region.
+
+We impute missing weekly case values with na_kalman() because a Kalman filter treats the observed series as noisy measurements of an underlying latent process and estimates the most likely missing points using information from the full time trajectory. Setting model = "StructTS" uses a structural time-series state-space model (level, trend, and optionally seasonal behavior), which is appropriate for epidemiological surveillance data where both long-term changes and seasonal patterns can occur. Using smooth = TRUE applies Kalman smoothing (not only filtering), meaning each missing value is estimated from both past and future observations, usually giving more stable and realistic imputations than using past data alone.
+
+```{r impute-missing-kalman, suppres.warnings = TRUE}
+library(imputeTS)
+
+imputation_fig_dir <- "images/imputation"
+if (!dir.exists(imputation_fig_dir)) dir.create(imputation_fig_dir, recursive = TRUE)
+
+regions_to_impute <- c("rafah", "khanyunis", "deiralbalah",  "gaza","northgaza")
+start_date <- as.Date("2024-02-04") # Monday of week 9, 2024
+end_date <- as.Date("2026-02-08")   # Monday of week 7, 2026
+
+disease_names <- c("Acute Respiratory Infections", "Acute Watery Diarrhea", "Bloody Diarrhea")
+imputed_list <- list()
+imputation_log <- list()
+
+imputation_fig_dir <- file.path(image_dir, "imputation")
+for (disease in disease_names) {
+  cat(sprintf("\n=== Disease: %s ===\n", disease))
+    dat <- read_csv(file.path(data_dir, files[[disease]]), name_repair = "unique_quiet")
+    dat$Start.Date <- as.Date(dat$Start.Date)
+    dat <- dat %>% select(-starts_with("..."))
+  dat$region <- tolower(trimws(dat$region))
+    for (region in regions_to_impute) {
+    cat(sprintf("  - Region: %s\n", region))
+        reg_dat <- dat[dat$region == region, ]
+    cat(sprintf("    rows before filling: %d\n", nrow(reg_dat)))
+        # Pad all weeks in the range
+        all_weeks <- seq(start_date, end_date, by = "week")
+        reg_full <- data.frame(Start.Date = all_weeks) %>%
+        left_join(reg_dat, by = "Start.Date")
+        reg_full$disease <- disease
+        reg_full$region <- region
+    n_missing_before <- sum(is.na(reg_full$cases))
+    cat(sprintf("    rows after filling: %d\n", nrow(reg_full)))
+    cat(sprintf("    missing before imputation: %d\n", n_missing_before))
+        # Impute missing values using Kalman smoothing
+        reg_full$cases_imputed <- na_kalman(reg_full$cases, model = "StructTS", smooth = TRUE, maxgap = 5)
+    n_missing_after <- sum(is.na(reg_full$cases_imputed))
+    cat(sprintf("    missing after imputation: %d\n", n_missing_after))
+        # Store result
+        imputed_list[[paste(disease, region, sep = "_")]] <- reg_full
+    imputation_log[[paste(disease, region, sep = "_")]] <- data.frame(
+      disease = disease,
+      region = region,
+      rows_before = nrow(reg_dat),
+      rows_after = nrow(reg_full),
+      missing_before = n_missing_before,
+      missing_after = n_missing_after
+    )
+        # Optional: plot before/after imputation
+        plot_df <- reg_full
+        plot_df$imputed <- is.na(plot_df$cases)
+        p <- ggplot(plot_df, aes(x = Start.Date)) +
+        geom_line(aes(y = cases_imputed), color = "#1b9e77", size = 1) +
+        geom_point(data = plot_df %>% filter(!imputed), aes(y = cases), color = "black", size = 2, alpha = 0.7) +
+        geom_point(data = plot_df %>% filter(imputed), aes(y = cases_imputed), color = "red", size = 2.2, alpha = 0.9) +
+        labs(title = paste("Imputation for", disease, "in", region),
+            x = "Week", y = "Cases (imputed)") +
+        theme_minimal()
+        print(p)
+        ggsave(
+          filename = file.path(imputation_fig_dir, paste0("Imputation_", disease, "_", region, ".png")),
+          plot = p,
+          width = 12,
+          height = 8,
+          dpi = 300
+        )
+    }
+}
+
+# Print compact summary table so output is always visible in knitted report
+imputation_summary <- bind_rows(imputation_log)
+print(imputation_summary)
+
+# Combine all imputed series into one table
+imputed_all <- bind_rows(imputed_list, .id = "series_id")
+
+# Ensure disease/region are always available:
+# - keep existing columns when already present
+# - otherwise parse from series_id (format: "<disease>_<region>")
+if (!"disease" %in% names(imputed_all)) imputed_all$disease <- NA_character_
+if (!"region" %in% names(imputed_all)) imputed_all$region <- NA_character_
+
+imputed_all$disease <- ifelse(
+  is.na(imputed_all$disease) | imputed_all$disease == "",
+  sub("_(rafah|khanyunis|deiralbalah)$", "", imputed_all$series_id),
+  imputed_all$disease
+)
+
+imputed_all$region <- ifelse(
+  is.na(imputed_all$region) | imputed_all$region == "",
+  sub("^.*_(rafah|khanyunis|deiralbalah)$", "\\1", imputed_all$series_id),
+  imputed_all$region
+)
+
+plot_data <- imputed_all %>%
+  mutate(
+    disease = as.character(disease),
+    region = as.character(region)
+  ) %>%
+  filter(!is.na(Start.Date))
+
+# One stacked plot: all diseases (stacked facets), lines per region
+imputed_stacked_plot <- ggplot(plot_data, aes(x = Start.Date, y = cases_imputed, color = region)) +
+  geom_line(linewidth = 0.9) +
+  geom_point(data = plot_data %>% filter(!is.na(cases)), color = "black", size = 1.1, alpha = 0.5) +
+  geom_point(data = plot_data %>% filter(is.na(cases)), color = "red", size = 1.4, alpha = 0.9) +
+  facet_wrap(~disease, ncol = 1, scales = "free_y") +
+  scale_x_date(
+    date_breaks = "1 month",
+    date_labels = "%b\n%Y",
+    minor_breaks = seq(min(plot_data$Start.Date, na.rm = TRUE),
+                       max(plot_data$Start.Date, na.rm = TRUE),
+                       by = "1 month")
+  ) +
+  labs(
+    title = "Imputed Weekly Cases by Disease (Kalman) and Region",
+    subtitle = "Regions: Rafah, Khanyunis, Deiralbalah | Points indicate originally missing values",
+    x = "Week",
+    y = "Cases (imputed)",
+    color = "Region"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.text = element_text(face = "bold"))
+
+print(imputed_stacked_plot)
+
+# Save outputs
+ggsave(paste0(imputation_fig_dir, "/imputed_cases_stacked_by_disease.png"), imputed_stacked_plot, width = 14, height = 12, dpi = 300)
+write_csv(imputed_all, paste0("data/Kalman_Imputed/imputed_cases_kalman_", start_date, "_", end_date, ".csv"))
+write_csv(imputation_summary, paste0("data/Kalman_Imputed/imputation_summary_kalman_", start_date, "_", end_date, ".csv"))
+```
+
+
+# Seasonality Analysis: STL Decomposition by Disease and Region
+Warning!! STL and ACF cannot function with missing data! You need to either impute the missing values prior to running those analyses or figure out which seasonal analysis can handle missing data directly. 
+
+Example for ARI data from Rafah: 
+```{r test stl function first}
+imputed_file <- paste0("data/Kalman_Imputed/imputed_cases_kalman_", start_date, "_", end_date, ".csv")
+if (!file.exists(imputed_file)) {
+  imputed_candidates <- list.files("data/Kalman_Imputed", pattern = "^imputed_cases_kalman_.*\\.csv$", full.names = TRUE)
+  stopifnot(length(imputed_candidates) > 0)
+  imputed_file <- imputed_candidates[length(imputed_candidates)]
+}
+
+imputed_df <- read_csv(imputed_file, show_col_types = FALSE)
+imputed_df$Start.Date <- as.Date(imputed_df$Start.Date)
+imputed_df$region <- tolower(trimws(imputed_df$region))
+imputed_df <- imputed_df %>%
+  filter(Start.Date >= start_date, Start.Date <= end_date) %>%
+    select(Start.Date, cases, region, week, year, End.Date, disease, cases_imputed)
+ari_rafah_imp <- imputed_df %>%
+  filter(disease == "Acute Respiratory Infections", region == "rafah") %>%
+  arrange(Start.Date)
+
+ts_ari_rafah <- ts(
+  ari_rafah_imp$cases_imputed,
+  frequency = ifelse(nrow(ari_rafah_imp) >= 104, 52, 26),
+  start = c(as.numeric(format(min(ari_rafah_imp$Start.Date), "%Y")),
+            as.numeric(format(min(ari_rafah_imp$Start.Date), "%U")))
+)
+
+if (nrow(ari_rafah_imp) < 104) {
+  message("Series has ", nrow(ari_rafah_imp), " points (<104). Using frequency = 26 instead of 52 for STL.")
+}
+
+stl_fit <- stl(ts_ari_rafah, s.window = "periodic")
+plot(stl_fit, main = "Acute Respiratory Infections - rafah (imputed)")
+
+var_seasonal <- var(stl_fit$time.series[, "seasonal"])
+var_remainder <- var(stl_fit$time.series[, "remainder"])
+seasonality_strength <- var_seasonal / (var_seasonal + var_remainder)
+print(seasonality_strength)
+
+acf(as.numeric(ts_ari_rafah), na.action = na.omit)
+```
+
+```{r stl-decomposition, warning=FALSE, fig.width=12, fig.height=12}
+imputed_file <- paste0("data/Kalman_Imputed/imputed_cases_kalman_", start_date, "_", end_date, ".csv")
+if (!file.exists(imputed_file)) {
+  imputed_candidates <- list.files("data/Kalman_Imputed", pattern = "^imputed_cases_kalman_.*\\.csv$", full.names = TRUE)
+  stopifnot(length(imputed_candidates) > 0)
+  imputed_file <- imputed_candidates[length(imputed_candidates)]
+}
+
+imputed_df <- read_csv(imputed_file, show_col_types = FALSE)
+imputed_df$Start.Date <- as.Date(imputed_df$Start.Date)
+imputed_df$region <- tolower(trimws(imputed_df$region))
+imputed_df <- imputed_df %>%
+  filter(Start.Date >= start_date, Start.Date <= end_date)
+
+regions_to_use <- c("rafah", "khanyunis", "deiralbalah", "gaza", "northgaza")
+disease_list <- unique(imputed_df$disease)
+
+if (!dir.exists("images/STL")) dir.create("images/STL", recursive = TRUE)
+
+for (disease_name in disease_list) {
+  cat(sprintf("\n=== Disease: %s ===\n", disease_name))
+  dat_base <- imputed_df %>% filter(disease == disease_name, region %in% regions_to_use)
+
+  # Add one aggregated pseudo-region with total cases across all selected regions
+  dat_total <- dat_base %>%
+    group_by(Start.Date, disease) %>%
+    summarise(
+      cases_imputed = if (all(is.na(cases_imputed))) NA_real_ else sum(cases_imputed, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(region = "all_regions_total")
+
+  dat <- bind_rows(dat_base, dat_total)
+  region_list <- c(regions_to_use, "all_regions_total")
+  disease_key <- gsub("[^A-Za-z0-9]+", "_", disease_name)
+
+  for (reg in region_list) {
+    cat(sprintf("  - Region: %s\n", reg))
+    reg_dat <- dat %>% filter(region == reg) %>% arrange(Start.Date)
+    if (nrow(reg_dat) < 104) {
+      message(paste("Skipping", reg, "for", disease_name, "- fewer than 104 points:", nrow(reg_dat)))
+      next
+    }
+
+    stl_series <- reg_dat$cases_imputed
+    if (sum(is.na(stl_series)) > 0) {
+      message(paste("Skipping", reg, "for", disease_name, "- contains NA values after imputation:", sum(is.na(stl_series))))
+      next
+    }
+
+    if (length(stl_series) < 104) {
+      message(paste("Skipping", reg, "for", disease_name, "- need at least 104 points for periodic STL, got", length(stl_series)))
+      next
+    }
+
+    ts_cases <- ts(
+      stl_series,
+      frequency = 52,
+      start = c(as.numeric(format(min(reg_dat$Start.Date), "%Y")),
+                as.numeric(format(min(reg_dat$Start.Date), "%U")))
+    )
+
+    stl_fit <- stl(ts_cases, s.window = "periodic")
+
+    # Save individual STL plot per region (base R plot)
+    reg_key <- gsub("[^A-Za-z0-9]+", "_", reg)
+    out_file <- file.path("images/STL", paste0("STL_imputed_", disease_key, "_", reg_key, ".png"))
+    png(out_file, width = 1200, height = 1200, res = 150)
+    plot(stl_fit, main = paste(disease_name, "-", reg, "(imputed)"))
+    dev.off()
+  }
+}
+
+```
+
+
+
+## Check seasonal signal for significance - ACF
+
+```{r ACF per region-disease}
+
+regions_to_use <- c("rafah", "khanyunis", "deiralbalah", "gaza", "northgaza")
+disease_list <- unique(imputed_df$disease)
+
+if (!dir.exists("images/ACF")) dir.create("images/ACF", recursive = TRUE)
+
+for (disease_name in disease_list) {
+  cat(sprintf("\n=== Disease: %s ===\n", disease_name))
+  dat_base <- imputed_df %>% filter(disease == disease_name, region %in% regions_to_use)
+
+  # Add one aggregated pseudo-region with total cases across all selected regions
+  dat_total <- dat_base %>%
+    group_by(Start.Date, disease) %>%
+    summarise(
+      cases_imputed = if (all(is.na(cases_imputed))) NA_real_ else sum(cases_imputed, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(region = "all_regions_total")
+
+  dat <- bind_rows(dat_base, dat_total)
+  region_list <- c(regions_to_use, "all_regions_total")
+  disease_key <- gsub("[^A-Za-z0-9]+", "_", disease_name)
+
+  for (reg in region_list) {
+    cat(sprintf("  - Region: %s\n", reg))
+    reg_dat <- dat %>% filter(region == reg) %>% arrange(Start.Date)
+    if (nrow(reg_dat) < 104) {
+      message(paste("Skipping", reg, "for", disease_name, "- fewer than 104 points:", nrow(reg_dat)))
+      next
+    }
+
+    acf_series <- reg_dat$cases_imputed
+    if (sum(is.na(acf_series)) > 0) {
+      message(paste("Skipping", reg, "for", disease_name, "- contains NA values after imputation:", sum(is.na(acf_series))))
+      next
+    }
+
+    reg_key <- gsub("[^A-Za-z0-9]+", "_", reg)
+    acf_file <- file.path("images/ACF", paste0("ACF_imputed_", disease_key, "_", reg_key, ".png"))
+
+    png(acf_file, width = 1200, height = 800, res = 150)
+    acf(acf_series, main = paste("ACF:", disease_name, "-", reg, "(imputed)"), xlab = "Lag (weeks)", lag.max = 104)
+    dev.off()
+  }
+}
+
+```
+
+## Check seasonality significance with Webel-Ollech Test
+By default, the WO-test combines the results of the QS-test and the kw-test, both calculated on the residuals of an automatic non-seasonal ARIMA model. If the p-value of the QS-test is below 0.01 or the p-value of the kw-test is below 0.002, the WO-test will classify the corresponding time series as seasonal.
+info: https://www.rdocumentation.org/packages/seastests/versions/0.15.4/topics/combined_test
+
+```{r wo test per region and disease}
+if (!requireNamespace("seastests", quietly = TRUE)) {
+  install.packages("seastests")
+}
+library(seastests)
+
+regions_to_use <- c("rafah", "khanyunis", "deiralbalah", "gaza", "northgaza")
+disease_list <- unique(imputed_df$disease)
+
+wo_results <- list()
+
+for (disease_name in disease_list) {
+  dat_base <- imputed_df %>% filter(disease == disease_name, region %in% regions_to_use)
+
+  # Add one aggregated pseudo-region with total cases across all selected regions
+  dat_total <- dat_base %>%
+    group_by(Start.Date, disease) %>%
+    summarise(
+      cases_imputed = if (all(is.na(cases_imputed))) NA_real_ else sum(cases_imputed, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(region = "all_regions_total")
+
+  dat <- bind_rows(dat_base, dat_total)
+  region_list <- c(regions_to_use, "all_regions_total")
+
+  for (reg in region_list) {
+    reg_dat <- dat %>% filter(region == reg) %>% arrange(Start.Date)
+
+    if (nrow(reg_dat) < 104) {
+      message(paste("Skipping", reg, "for", disease_name, "- fewer than 104 points:", nrow(reg_dat)))
+      next
+    }
+
+    wo_series <- reg_dat$cases_imputed
+    if (sum(is.na(wo_series)) > 0) {
+      message(paste("Skipping", reg, "for", disease_name, "- contains NA values after imputation:", sum(is.na(wo_series))))
+      next
+    }
+
+    ts_cases <- ts(
+      wo_series,
+      frequency = 52,
+      start = c(as.numeric(format(min(reg_dat$Start.Date), "%Y")),
+                as.numeric(format(min(reg_dat$Start.Date), "%U")))
+    )
+
+    wo_out <- tryCatch(seastests::combined_test(ts_cases), error = function(e) e)
+
+    if (inherits(wo_out, "error")) {
+      message(paste("WO test failed for", reg, "in", disease_name, ":", wo_out$message))
+      next
+    }
+
+    wo_results[[paste(disease_name, reg, sep = "_")]] <- data.frame(
+      disease = disease_name,
+      region = reg,
+      wo_test = wo_out$test,
+      seasonal = isTRUE(wo_out$stat),
+      qs_p_value = unname(wo_out$Pval["QS p-value"]),
+      qsr_p_value = unname(wo_out$Pval["QS-R p-value"]),
+      kwr_p_value = unname(wo_out$Pval["KW-R p-value"])
+    )
+  }
+}
+
+wo_summary <- bind_rows(wo_results)
+print(wo_summary)
+
+if (!dir.exists("data/Kalman_Imputed")) dir.create("data/Kalman_Imputed", recursive = TRUE)
+write_csv(wo_summary, file.path("data/Kalman_Imputed", paste0("wo_test_summary_", start_date, "_", end_date, ".csv")))
+```
+
+From the results of the WO-test we can clearly see that none of the diseases show clear seasonal patterns, nor for region-specific data (Khan Yunis, Deir al Balah, Rafah), nor for the combined data for all 5 regions. 
+
+
+
+---
+
+

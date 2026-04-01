@@ -1,5 +1,7 @@
-# Ignore the entire /data directory and its contents
+# Ignore the entire /data and /images directory and its contents
 /data/
+/images/
+*.html
 
 # Common files to ignore
 *.log
