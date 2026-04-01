@@ -18,6 +18,16 @@ library(ggfortify)
 library(patchwork)
 library(tidyr)
 
+if (requireNamespace("knitr", quietly = TRUE)) {
+  knitr::opts_chunk$set(
+    fig.width = 16,
+    fig.height = 10,
+    out.width = "100%",
+    fig.align = "center",
+    dpi = 300
+  )
+}
+
 image_dir <- "images"
 
 data_dir <- "data/"
@@ -38,6 +48,10 @@ summarize_strike <- function(x) {
   if (grepl("naval", x)) return("naval bombardement")
   return("other")
 }
+
+# Global verbosity helpers to keep knitted HTML concise
+verbose_analysis <- FALSE
+avcat <- function(...) if (isTRUE(verbose_analysis)) cat(...)
 ```
 
 # Data time-series 
@@ -348,31 +362,35 @@ For robust time series analysis (given large proportions of missing data in Nort
 
 We impute missing weekly case values with na_kalman() because a Kalman filter treats the observed series as noisy measurements of an underlying latent process and estimates the most likely missing points using information from the full time trajectory. Setting model = "StructTS" uses a structural time-series state-space model (level, trend, and optionally seasonal behavior), which is appropriate for epidemiological surveillance data where both long-term changes and seasonal patterns can occur. Using smooth = TRUE applies Kalman smoothing (not only filtering), meaning each missing value is estimated from both past and future observations, usually giving more stable and realistic imputations than using past data alone.
 
-```{r impute-missing-kalman, suppres.warnings = TRUE}
+Imputation is required because STL and ACF analyses can't deal with missing values in the time series. 
+
+```{r impute-missing-kalman, warning=FALSE, message=FALSE, fig.width=16, fig.height=14, out.width='100%', fig.align='center'}
 library(imputeTS)
 
 imputation_fig_dir <- "images/imputation"
 if (!dir.exists(imputation_fig_dir)) dir.create(imputation_fig_dir, recursive = TRUE)
 
 regions_to_impute <- c("rafah", "khanyunis", "deiralbalah",  "gaza","northgaza")
-start_date <- as.Date("2024-02-04") # Monday of week 9, 2024
-end_date <- as.Date("2026-02-08")   # Monday of week 7, 2026
+start_date <- as.Date("2024-02-04") 
+end_date <- as.Date("2026-02-08")   
 
 disease_names <- c("Acute Respiratory Infections", "Acute Watery Diarrhea", "Bloody Diarrhea")
 imputed_list <- list()
 imputation_log <- list()
+verbose_imputation <- FALSE
+vcat <- function(...) if (isTRUE(verbose_imputation)) cat(...)
 
 imputation_fig_dir <- file.path(image_dir, "imputation")
 for (disease in disease_names) {
-  cat(sprintf("\n=== Disease: %s ===\n", disease))
+  vcat(sprintf("\n=== Disease: %s ===\n", disease))
     dat <- read_csv(file.path(data_dir, files[[disease]]), name_repair = "unique_quiet")
     dat$Start.Date <- as.Date(dat$Start.Date)
     dat <- dat %>% select(-starts_with("..."))
   dat$region <- tolower(trimws(dat$region))
     for (region in regions_to_impute) {
-    cat(sprintf("  - Region: %s\n", region))
+    vcat(sprintf("  - Region: %s\n", region))
         reg_dat <- dat[dat$region == region, ]
-    cat(sprintf("    rows before filling: %d\n", nrow(reg_dat)))
+    vcat(sprintf("    rows before filling: %d\n", nrow(reg_dat)))
         # Pad all weeks in the range
         all_weeks <- seq(start_date, end_date, by = "week")
         reg_full <- data.frame(Start.Date = all_weeks) %>%
@@ -380,12 +398,12 @@ for (disease in disease_names) {
         reg_full$disease <- disease
         reg_full$region <- region
     n_missing_before <- sum(is.na(reg_full$cases))
-    cat(sprintf("    rows after filling: %d\n", nrow(reg_full)))
-    cat(sprintf("    missing before imputation: %d\n", n_missing_before))
+    vcat(sprintf("    rows after filling: %d\n", nrow(reg_full)))
+    vcat(sprintf("    missing before imputation: %d\n", n_missing_before))
         # Impute missing values using Kalman smoothing
         reg_full$cases_imputed <- na_kalman(reg_full$cases, model = "StructTS", smooth = TRUE, maxgap = 5)
     n_missing_after <- sum(is.na(reg_full$cases_imputed))
-    cat(sprintf("    missing after imputation: %d\n", n_missing_after))
+    vcat(sprintf("    missing after imputation: %d\n", n_missing_after))
         # Store result
         imputed_list[[paste(disease, region, sep = "_")]] <- reg_full
     imputation_log[[paste(disease, region, sep = "_")]] <- data.frame(
@@ -406,7 +424,7 @@ for (disease in disease_names) {
         labs(title = paste("Imputation for", disease, "in", region),
             x = "Week", y = "Cases (imputed)") +
         theme_minimal()
-        print(p)
+        if (isTRUE(verbose_imputation)) print(p)
         ggsave(
           filename = file.path(imputation_fig_dir, paste0("Imputation_", disease, "_", region, ".png")),
           plot = p,
@@ -546,7 +564,7 @@ disease_list <- unique(imputed_df$disease)
 if (!dir.exists("images/STL")) dir.create("images/STL", recursive = TRUE)
 
 for (disease_name in disease_list) {
-  cat(sprintf("\n=== Disease: %s ===\n", disease_name))
+  avcat(sprintf("\n=== Disease: %s ===\n", disease_name))
   dat_base <- imputed_df %>% filter(disease == disease_name, region %in% regions_to_use)
 
   # Add one aggregated pseudo-region with total cases across all selected regions
@@ -563,21 +581,21 @@ for (disease_name in disease_list) {
   disease_key <- gsub("[^A-Za-z0-9]+", "_", disease_name)
 
   for (reg in region_list) {
-    cat(sprintf("  - Region: %s\n", reg))
+    avcat(sprintf("  - Region: %s\n", reg))
     reg_dat <- dat %>% filter(region == reg) %>% arrange(Start.Date)
     if (nrow(reg_dat) < 104) {
-      message(paste("Skipping", reg, "for", disease_name, "- fewer than 104 points:", nrow(reg_dat)))
+      avcat(paste("Skipping", reg, "for", disease_name, "- fewer than 104 points:", nrow(reg_dat), "\n"))
       next
     }
 
     stl_series <- reg_dat$cases_imputed
     if (sum(is.na(stl_series)) > 0) {
-      message(paste("Skipping", reg, "for", disease_name, "- contains NA values after imputation:", sum(is.na(stl_series))))
+      avcat(paste("Skipping", reg, "for", disease_name, "- contains NA values after imputation:", sum(is.na(stl_series)), "\n"))
       next
     }
 
     if (length(stl_series) < 104) {
-      message(paste("Skipping", reg, "for", disease_name, "- need at least 104 points for periodic STL, got", length(stl_series)))
+      avcat(paste("Skipping", reg, "for", disease_name, "- need at least 104 points for periodic STL, got", length(stl_series), "\n"))
       next
     }
 
@@ -589,6 +607,9 @@ for (disease_name in disease_list) {
     )
 
     stl_fit <- stl(ts_cases, s.window = "periodic")
+
+    # Show STL in knitted HTML
+    plot(stl_fit, main = paste(disease_name, "-", reg, "(imputed)"))
 
     # Save individual STL plot per region (base R plot)
     reg_key <- gsub("[^A-Za-z0-9]+", "_", reg)
@@ -613,7 +634,7 @@ disease_list <- unique(imputed_df$disease)
 if (!dir.exists("images/ACF")) dir.create("images/ACF", recursive = TRUE)
 
 for (disease_name in disease_list) {
-  cat(sprintf("\n=== Disease: %s ===\n", disease_name))
+  avcat(sprintf("\n=== Disease: %s ===\n", disease_name))
   dat_base <- imputed_df %>% filter(disease == disease_name, region %in% regions_to_use)
 
   # Add one aggregated pseudo-region with total cases across all selected regions
@@ -630,21 +651,24 @@ for (disease_name in disease_list) {
   disease_key <- gsub("[^A-Za-z0-9]+", "_", disease_name)
 
   for (reg in region_list) {
-    cat(sprintf("  - Region: %s\n", reg))
+    avcat(sprintf("  - Region: %s\n", reg))
     reg_dat <- dat %>% filter(region == reg) %>% arrange(Start.Date)
     if (nrow(reg_dat) < 104) {
-      message(paste("Skipping", reg, "for", disease_name, "- fewer than 104 points:", nrow(reg_dat)))
+      avcat(paste("Skipping", reg, "for", disease_name, "- fewer than 104 points:", nrow(reg_dat), "\n"))
       next
     }
 
     acf_series <- reg_dat$cases_imputed
     if (sum(is.na(acf_series)) > 0) {
-      message(paste("Skipping", reg, "for", disease_name, "- contains NA values after imputation:", sum(is.na(acf_series))))
+      avcat(paste("Skipping", reg, "for", disease_name, "- contains NA values after imputation:", sum(is.na(acf_series)), "\n"))
       next
     }
 
     reg_key <- gsub("[^A-Za-z0-9]+", "_", reg)
     acf_file <- file.path("images/ACF", paste0("ACF_imputed_", disease_key, "_", reg_key, ".png"))
+
+    # Show ACF in knitted HTML
+    acf(acf_series, main = paste("ACF:", disease_name, "-", reg, "(imputed)"), xlab = "Lag (weeks)", lag.max = 104)
 
     png(acf_file, width = 1200, height = 800, res = 150)
     acf(acf_series, main = paste("ACF:", disease_name, "-", reg, "(imputed)"), xlab = "Lag (weeks)", lag.max = 104)
@@ -688,13 +712,13 @@ for (disease_name in disease_list) {
     reg_dat <- dat %>% filter(region == reg) %>% arrange(Start.Date)
 
     if (nrow(reg_dat) < 104) {
-      message(paste("Skipping", reg, "for", disease_name, "- fewer than 104 points:", nrow(reg_dat)))
+      avcat(paste("Skipping", reg, "for", disease_name, "- fewer than 104 points:", nrow(reg_dat), "\n"))
       next
     }
 
     wo_series <- reg_dat$cases_imputed
     if (sum(is.na(wo_series)) > 0) {
-      message(paste("Skipping", reg, "for", disease_name, "- contains NA values after imputation:", sum(is.na(wo_series))))
+      avcat(paste("Skipping", reg, "for", disease_name, "- contains NA values after imputation:", sum(is.na(wo_series)), "\n"))
       next
     }
 
@@ -708,7 +732,7 @@ for (disease_name in disease_list) {
     wo_out <- tryCatch(seastests::combined_test(ts_cases), error = function(e) e)
 
     if (inherits(wo_out, "error")) {
-      message(paste("WO test failed for", reg, "in", disease_name, ":", wo_out$message))
+      avcat(paste("WO test failed for", reg, "in", disease_name, ":", wo_out$message, "\n"))
       next
     }
 
